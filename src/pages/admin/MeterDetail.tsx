@@ -121,10 +121,11 @@ export default function MeterDetail() {
 
   const latestReading = readings[0]
   const currentVoltage = latestReading?.voltage
-  const currentCurrent = latestReading?.current
-  const currentSourceCurrent = latestReading?.source_current ?? currentCurrent
-  const currentDeltaCurrent = latestReading?.delta_current ?? (currentSourceCurrent !== undefined && currentCurrent !== undefined ? Math.max(0, currentSourceCurrent - currentCurrent) : 0)
-  const isTheftDetected = Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.010)
+  const isVoltageZero = currentVoltage === undefined || currentVoltage <= 0
+  const currentCurrent = isVoltageZero ? 0 : (latestReading?.current ?? 0)
+  const currentSourceCurrent = isVoltageZero ? 0 : (latestReading?.source_current ?? currentCurrent)
+  const currentDeltaCurrent = isVoltageZero ? 0 : (latestReading?.delta_current ?? Math.max(0, currentSourceCurrent - currentCurrent))
+  const isTheftDetected = !isVoltageZero && Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.030)
 
   return (
     <div className="space-y-6">

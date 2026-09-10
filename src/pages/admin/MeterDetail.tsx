@@ -180,6 +180,11 @@ export default function MeterDetail() {
               <span className="text-[11px] font-medium text-emerald-700">
                 {isWsConnected ? 'Live • Realtime' : 'Live • Polling'}
               </span>
+              {latestReading && (
+                <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
+                  {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                </span>
+              )}
             </div>
           </div>
         </div>
@@ -208,7 +213,7 @@ export default function MeterDetail() {
         </div>
         <div className="rounded-lg border border-slate-200 bg-white p-3.5">
           <div className="text-[11px] font-medium text-slate-500 uppercase tracking-wider">Delta (ΔI)</div>
-          <div className={`mt-1 text-lg font-bold ${currentDeltaCurrent >= 0.010 ? 'text-rose-600' : 'text-slate-900'}`}>
+          <div className={`mt-1 text-lg font-bold ${currentDeltaCurrent >= 0.030 ? 'text-rose-600' : 'text-slate-900'}`}>
             {currentDeltaCurrent > 0 ? `+${currentDeltaCurrent.toFixed(3)}` : '0.000'} <span className="text-xs font-normal text-slate-500">A</span>
           </div>
         </div>

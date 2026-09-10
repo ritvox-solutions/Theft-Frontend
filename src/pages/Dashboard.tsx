@@ -109,7 +109,7 @@ export default function Dashboard() {
   const currentCurrent = latestReading?.current
   const currentSourceCurrent = latestReading?.source_current ?? currentCurrent
   const currentDeltaCurrent = latestReading?.delta_current ?? (currentSourceCurrent !== undefined && currentCurrent !== undefined ? Math.max(0, currentSourceCurrent - currentCurrent) : 0)
-  const isTheftDetected = Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.010)
+  const isTheftDetected = Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.030)
   const currentPower = latestReading?.power
 
   const isRelayConnected = meter.relay_state === 'connected'
@@ -161,6 +161,11 @@ export default function Dashboard() {
             <span className="text-[11px] font-medium text-emerald-700">
               {isWsConnected ? 'Live • Realtime' : 'Live • Polling'}
             </span>
+            {latestReading && (
+              <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
+                {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+              </span>
+            )}
           </div>
         </div>
         <div

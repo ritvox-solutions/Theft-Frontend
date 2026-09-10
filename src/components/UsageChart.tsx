@@ -40,6 +40,11 @@ export default function UsageChart({
       }
     })
 
+  // Check time span of readings to decide whether to show seconds
+  const firstTime = chartData.length > 0 ? new Date(chartData[0].key).getTime() : 0
+  const lastTime = chartData.length > 0 ? new Date(chartData[chartData.length - 1].key).getTime() : 0
+  const isShortWindow = (lastTime - firstTime) <= 15 * 60 * 1000
+
   return (
     <div className="h-64 w-full">
       <ResponsiveContainer width="100%" height="100%">
@@ -50,7 +55,8 @@ export default function UsageChart({
             tick={{ fontSize: 11, fill: '#94a3b8' }}
             stroke="#cbd5e1"
             tickFormatter={(val: string) => {
-              // Convert "HH:MM:SS" or "HH:MM:SS AM" to "HH:MM"
+              if (isShortWindow) return val
+              // Convert "HH:MM:SS" or "HH:MM:SS AM" to "HH:MM" for longer periods
               return val.replace(/:\d{2}(?=\s|[a-zA-Z]|$)/, '')
             }}
           />

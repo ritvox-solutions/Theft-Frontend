@@ -7,6 +7,7 @@ import {
   activateMeter,
   createMeter,
   deactivateMeter,
+  deleteMeter,
   getAllMeters,
 } from '../../services/meters-admin'
 import { getReadings } from '../../services/readings'
@@ -169,6 +170,9 @@ export default function Meters() {
     return () => clearInterval(interval)
   }, [])
 
+  const [meterToDelete, setMeterToDelete] = useState<MeterRow | null>(null)
+  const [isDeleting, setIsDeleting] = useState(false)
+
   async function handleToggleStatus(row: MeterRow) {
     try {
       if (row.meter.status === 'active') {
@@ -181,6 +185,22 @@ export default function Meters() {
       loadRows()
     } catch {
       showToast('Failed to update meter status', 'error')
+    }
+  }
+
+  async function handleConfirmDelete() {
+    if (!meterToDelete) return
+    setIsDeleting(true)
+    try {
+      await deleteMeter(meterToDelete.meter.id)
+      showToast(`Meter ${meterToDelete.meter.meter_code} and all associated data deleted`, 'success')
+      setRows((prev) => prev.filter((r) => r.meter.id !== meterToDelete.meter.id))
+      setMeterToDelete(null)
+    } catch (err: any) {
+      const msg = err.response?.data?.detail || 'Failed to delete meter'
+      showToast(msg, 'error')
+    } finally {
+      setIsDeleting(false)
     }
   }
 
@@ -212,16 +232,16 @@ export default function Meters() {
         className="w-full max-w-sm rounded-md border border-slate-300 px-3 py-2 text-sm focus:border-primary focus:outline-none"
       />
 
-      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white">
+      <div className="overflow-x-auto rounded-lg border border-slate-200 bg-white shadow-sm">
         <table className="w-full text-sm">
           <thead>
-            <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400">
+            <tr className="border-b border-slate-200 text-left text-xs uppercase tracking-wide text-slate-400 bg-slate-50/50">
               <th className="px-4 py-3">Meter Code</th>
               <th className="px-4 py-3">Consumer</th>
               <th className="px-4 py-3">Status</th>
               <th className="px-4 py-3">Load</th>
               <th className="px-4 py-3">Latest Reading</th>
-              <th className="px-4 py-3">Actions</th>
+              <th className="px-4 py-3 text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
@@ -241,12 +261,12 @@ export default function Meters() {
               filtered.map((row) => (
                 <tr
                   key={row.meter.id}
-                  className={`border-b border-slate-100 last:border-0 ${
-                    row.meter.status === 'inactive' ? 'bg-slate-50 text-slate-400' : ''
+                  className={`border-b border-slate-100 last:border-0 hover:bg-slate-50/70 transition-colors ${
+                    row.meter.status === 'inactive' ? 'bg-slate-50/80 text-slate-400' : ''
                   }`}
                 >
                   <td className="px-4 py-3 font-medium text-slate-900">
-                    <Link to={`/admin/meters/${row.meter.id}`} className="hover:underline">
+                    <Link to={`/admin/meters/${row.meter.id}`} className="text-primary font-semibold hover:underline">
                       {row.meter.meter_code}
                     </Link>
                   </td>
@@ -270,14 +290,23 @@ export default function Meters() {
                         })
                       : 'No readings yet'}
                   </td>
-                  <td className="px-4 py-3">
-                    <button
-                      type="button"
-                      onClick={() => handleToggleStatus(row)}
-                      className="text-sm font-medium text-primary hover:underline"
-                    >
-                      {row.meter.status === 'active' ? 'Deactivate' : 'Activate'}
-                    </button>
+                  <td className="px-4 py-3 text-right">
+                    <div className="inline-flex items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleToggleStatus(row)}
+                        className="text-xs font-semibold text-slate-600 hover:text-slate-900 hover:underline"
+                      >
+                        {row.meter.status === 'active' ? 'Deactivate' : 'Activate'}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setMeterToDelete(row)}
+                        className="text-xs font-semibold text-rose-600 hover:text-rose-800 hover:underline"
+                      >
+                        Delete
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))
@@ -285,6 +314,61 @@ export default function Meters() {
           </tbody>
         </table>
       </div>
+
+      {/* ─── Delete Confirmation Modal ─────────────────────────── */}
+      {meterToDelete && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/40 backdrop-blur-xs p-4">
+          <div className="w-full max-w-md rounded-xl bg-white p-6 shadow-2xl border border-slate-200">
+            <div className="flex items-center gap-3 text-rose-600 mb-3">
+              <div className="flex h-10 w-10 items-center justify-center rounded-full bg-rose-100">
+                <svg className="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                </svg>
+              </div>
+              <div>
+                <h3 className="text-base font-semibold text-slate-900">Delete Meter?</h3>
+                <p className="text-xs text-slate-500 font-mono">{meterToDelete.meter.meter_code}</p>
+              </div>
+            </div>
+
+            <p className="text-sm text-slate-600 leading-relaxed">
+              Are you sure you want to permanently delete meter <strong className="font-semibold text-slate-900">{meterToDelete.meter.meter_code}</strong>?
+            </p>
+            <div className="mt-3 rounded-lg bg-rose-50 border border-rose-100 p-3 text-xs text-rose-800">
+              ⚠️ This will cascade-delete all telemetry readings, 15-minute consumption windows, anomaly alerts, and bills linked to this meter. This action cannot be undone.
+            </div>
+
+            <div className="mt-6 flex items-center justify-end gap-3">
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={() => setMeterToDelete(null)}
+                className="rounded-lg border border-slate-200 px-4 py-2 text-sm font-medium text-slate-700 hover:bg-slate-50 transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                disabled={isDeleting}
+                onClick={handleConfirmDelete}
+                className="inline-flex items-center gap-2 rounded-lg bg-rose-600 px-4 py-2 text-sm font-medium text-white hover:bg-rose-700 disabled:opacity-60 transition-colors shadow-sm"
+              >
+                {isDeleting ? (
+                  <>
+                    <svg className="h-4 w-4 animate-spin text-white" fill="none" viewBox="0 0 24 24">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span>Deleting…</span>
+                  </>
+                ) : (
+                  <span>Yes, Delete Meter</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

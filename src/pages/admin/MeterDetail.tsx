@@ -13,6 +13,16 @@ import { getReadings } from '../../services/readings'
 
 const POLL_INTERVAL_MS = 8000
 
+function formatAgo(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'never'
+  if (seconds <= 1) return 'just now'
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
 export default function MeterDetail() {
   const { meterId } = useParams<{ meterId: string }>()
   const { showToast } = useToast()
@@ -22,9 +32,11 @@ export default function MeterDetail() {
   const [isLoading, setIsLoading] = useState(true)
   const [relayBusy, setRelayBusy] = useState(false)
   const [now, setNow] = useState(() => Date.now())
+  const [lastPacketTime, setLastPacketTime] = useState<number | null>(null)
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 2000)
+    // 1-second continuous ticking timer
+    const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
 
@@ -34,6 +46,7 @@ export default function MeterDetail() {
     enabled: Boolean(meter?.meter_code),
     onReading: (incomingReading, incomingMeterCode) => {
       if (incomingMeterCode && meter?.meter_code && incomingMeterCode !== meter.meter_code) return
+      setLastPacketTime(Date.now())
       setReadings((prev) => {
         if (prev.some((r) => r.recorded_at === incomingReading.recorded_at)) {
           return prev
@@ -52,6 +65,7 @@ export default function MeterDetail() {
   const { isConnected: isWsConnected } = useWebSocket({
     onReading: (incomingReading, relayState, incomingMeterId) => {
       if (incomingMeterId && incomingMeterId !== meterId) return
+      setLastPacketTime(Date.now())
       setReadings((prev) => {
         if (prev.some((r) => r.id === incomingReading.id || r.recorded_at === incomingReading.recorded_at)) {
           return prev
@@ -101,6 +115,12 @@ export default function MeterDetail() {
         ])
         if (cancelled) return
         setMeter(m)
+        if (meterReadings.length > 0) {
+          const recordedEpoch = new Date(meterReadings[0].recorded_at).getTime()
+          if (Date.now() - recordedEpoch < 8000) {
+            setLastPacketTime(recordedEpoch)
+          }
+        }
         setReadings((prev) => {
           if (prev.length > 0 && prev[0].id.startsWith('mqtt-')) {
             const liveTimestamps = new Set(prev.map((r) => r.recorded_at))
@@ -156,8 +176,16 @@ export default function MeterDetail() {
 
   const latestReading = readings[0]
   const currentVoltage = latestReading?.voltage
-  const readingAgeMs = latestReading ? now - new Date(latestReading.recorded_at).getTime() : Infinity
-  const isDeviceActive = readingAgeMs < 20000
+
+  // Continuous live packet age tracking:
+  const secondsSincePacket = lastPacketTime
+    ? Math.max(0, Math.floor((now - lastPacketTime) / 1000))
+    : latestReading
+    ? Math.max(0, Math.floor((now - new Date(latestReading.recorded_at).getTime()) / 1000))
+    : Infinity
+
+  // Mark offline if no packet received within 6s (ESP32 transmits every 2s)
+  const isDeviceActive = secondsSincePacket < 6
 
   const isVoltageZero = !isDeviceActive || currentVoltage === undefined || currentVoltage <= 0
   const currentCurrent = isVoltageZero ? 0 : (latestReading?.current ?? 0)
@@ -176,8 +204,10 @@ export default function MeterDetail() {
             </svg>
             <span>Meter is currently offline or disconnected from HiveMQ. Waiting for telemetry...</span>
           </div>
-          <span className="font-mono text-amber-700">
-            {latestReading ? `Last packet: ${new Date(latestReading.recorded_at).toLocaleTimeString()}` : 'No packets'}
+          <span className="font-mono text-amber-800 font-semibold">
+            {latestReading
+              ? `Last packet: ${new Date(latestReading.recorded_at).toLocaleTimeString()} (${formatAgo(secondsSincePacket)})`
+              : 'No packets'}
           </span>
         </div>
       )}
@@ -203,7 +233,7 @@ export default function MeterDetail() {
               <p className="mt-1 text-xs text-rose-800 font-medium">
                 Incoming current from service drop exceeds junction box current! Line bypass detected.
               </p>
-              <div className="mt-2 flex flex-wrap items-center gap-4 rounded-lg bg-rose-100/80 px-3 py-2 text-xs font-mono text-rose-950">
+              <div className="mt-2.5 flex flex-wrap items-center gap-4 rounded-lg bg-rose-100/80 px-3 py-2 text-xs font-mono text-rose-950">
                 <span>Incoming Line (I₁): <strong className="text-rose-900">{currentSourceCurrent !== undefined ? currentSourceCurrent.toFixed(3) : '—'} A</strong></span>
                 <span>•</span>
                 <span>Junction Box (I₂): <strong className="text-slate-800">{currentCurrent !== undefined ? currentCurrent.toFixed(3) : '—'} A</strong></span>
@@ -227,29 +257,47 @@ export default function MeterDetail() {
               label={meter.status === 'active' ? 'Active' : 'Inactive'}
             />
             {isDeviceActive ? (
-              <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 border border-emerald-200">
+              <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 border border-emerald-200">
                 <span className="relative flex h-2 w-2">
                   <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                   <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                 </span>
-                <span className="text-[11px] font-medium text-emerald-700">
-                  {isMqttConnected ? 'Live • MQTT Direct' : isWsConnected ? 'Live • WebSocket' : 'Live'}
+                <span className="text-[11px] font-semibold text-emerald-700">
+                  {isMqttConnected ? 'Live • Realtime' : isWsConnected ? 'Live • WebSocket' : 'Live'}
                 </span>
                 {latestReading && (
-                  <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
-                    {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  <span className="text-[11px] font-mono text-slate-600 border-l border-emerald-200 pl-1.5 ml-0.5">
+                    {new Date(latestReading.recorded_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })}
+                    <span className="text-emerald-600 font-semibold ml-1.5">
+                      ({formatAgo(secondsSincePacket)})
+                    </span>
                   </span>
                 )}
               </div>
             ) : (
-              <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 border border-amber-200">
+              <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 border border-amber-200">
                 <span className="h-2 w-2 rounded-full bg-amber-500"></span>
-                <span className="text-[11px] font-medium text-amber-700">
+                <span className="text-[11px] font-semibold text-amber-700">
                   Device Offline
                 </span>
-                {latestReading && (
+                {latestReading ? (
                   <span className="text-[11px] font-mono text-slate-500 border-l border-amber-200 pl-1.5 ml-0.5">
-                    Last seen {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                    Last seen {new Date(latestReading.recorded_at).toLocaleTimeString([], {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      second: '2-digit',
+                    })}
+                    <span className="text-amber-700 font-semibold ml-1.5">
+                      ({formatAgo(secondsSincePacket)})
+                    </span>
+                  </span>
+                ) : (
+                  <span className="text-[11px] font-mono text-slate-400 border-l border-amber-200 pl-1.5 ml-0.5">
+                    No packets received
                   </span>
                 )}
               </div>

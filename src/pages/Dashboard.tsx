@@ -10,6 +10,16 @@ import type { Reading } from '../services/readings'
 
 const RECENT_READINGS_LIMIT = 30
 
+function formatAgo(seconds: number): string {
+  if (!Number.isFinite(seconds) || seconds < 0) return 'never'
+  if (seconds <= 1) return 'just now'
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ${seconds % 60}s ago`
+  const hours = Math.floor(minutes / 60)
+  return `${hours}h ago`
+}
+
 interface MinimalCardProps {
   label: string
   value: string
@@ -35,9 +45,11 @@ export default function Dashboard() {
   const [readings, setReadings] = useState<Reading[]>([])
   const [estimate, setEstimate] = useState<CurrentCycleEstimate | null>(null)
   const [now, setNow] = useState(() => Date.now())
+  const [lastPacketTime, setLastPacketTime] = useState<number | null>(null)
 
   useEffect(() => {
-    const timer = setInterval(() => setNow(Date.now()), 2000)
+    // 1-second continuous ticking timer
+    const timer = setInterval(() => setNow(Date.now()), 1000)
     return () => clearInterval(timer)
   }, [])
 
@@ -50,6 +62,7 @@ export default function Dashboard() {
     enabled: Boolean(meter?.meter_code),
     onReading: (incomingReading, incomingMeterCode) => {
       if (incomingMeterCode && incomingMeterCode !== meter?.meter_code) return
+      setLastPacketTime(Date.now())
       setReadings((prev) => {
         if (prev.some((r) => r.recorded_at === incomingReading.recorded_at)) {
           return prev
@@ -68,6 +81,7 @@ export default function Dashboard() {
   const { isConnected: isWsConnected } = useWebSocket({
     onReading: (incomingReading, relayState, incomingMeterId) => {
       if (!meter || (incomingMeterId && incomingMeterId !== meter.id)) return
+      setLastPacketTime(Date.now())
       setReadings((prev) => {
         if (prev.some((r) => r.id === incomingReading.id || r.recorded_at === incomingReading.recorded_at)) {
           return prev
@@ -98,6 +112,12 @@ export default function Dashboard() {
           getCurrentEstimate(meterId).catch(() => null),
         ])
         if (!cancelled) {
+          if (readingsData.length > 0) {
+            const recordedEpoch = new Date(readingsData[0].recorded_at).getTime()
+            if (Date.now() - recordedEpoch < 8000) {
+              setLastPacketTime(recordedEpoch)
+            }
+          }
           setReadings((prev) => {
             // Keep recent direct MQTT readings if any arrived before DB load
             if (prev.length > 0 && prev[0].id.startsWith('mqtt-')) {
@@ -149,8 +169,16 @@ export default function Dashboard() {
 
   const latestReading = readings[0]
   const currentVoltage = latestReading?.voltage
-  const readingAgeMs = latestReading ? now - new Date(latestReading.recorded_at).getTime() : Infinity
-  const isDeviceActive = readingAgeMs < 20000
+
+  // Continuous live packet age tracking:
+  const secondsSincePacket = lastPacketTime
+    ? Math.max(0, Math.floor((now - lastPacketTime) / 1000))
+    : latestReading
+    ? Math.max(0, Math.floor((now - new Date(latestReading.recorded_at).getTime()) / 1000))
+    : Infinity
+
+  // Mark offline if no packet received within 6s (ESP32 transmits every 2s)
+  const isDeviceActive = secondsSincePacket < 6
 
   const isVoltageZero = !isDeviceActive || currentVoltage === undefined || currentVoltage <= 0
   const currentCurrent = isVoltageZero ? 0 : (latestReading?.current ?? 0)
@@ -170,10 +198,12 @@ export default function Dashboard() {
             <svg className="h-4 w-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
             </svg>
-            <span>Hardware is currently offline or rebooting. Waiting for fresh telemetry from meter...</span>
+            <span>Hardware is currently offline or disconnected. Waiting for telemetry...</span>
           </div>
-          <span className="font-mono text-amber-700">
-            {latestReading ? `Last packet: ${new Date(latestReading.recorded_at).toLocaleTimeString()}` : 'No packets'}
+          <span className="font-mono text-amber-800 font-semibold">
+            {latestReading
+              ? `Last packet: ${new Date(latestReading.recorded_at).toLocaleTimeString()} (${formatAgo(secondsSincePacket)})`
+              : 'No packets'}
           </span>
         </div>
       )}
@@ -216,29 +246,47 @@ export default function Dashboard() {
         <div className="flex items-center gap-3">
           <h1 className="text-base font-semibold text-slate-900">Dashboard</h1>
           {isDeviceActive ? (
-            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 border border-emerald-200">
+            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-1 border border-emerald-200">
               <span className="relative flex h-2 w-2">
                 <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
                 <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
               </span>
-              <span className="text-[11px] font-medium text-emerald-700">
-                {isMqttConnected ? 'Live • MQTT Direct' : isWsConnected ? 'Live • WebSocket' : 'Live'}
+              <span className="text-[11px] font-semibold text-emerald-700">
+                {isMqttConnected ? 'Live • Realtime' : isWsConnected ? 'Live • WebSocket' : 'Live'}
               </span>
               {latestReading && (
-                <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
-                  {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                <span className="text-[11px] font-mono text-slate-600 border-l border-emerald-200 pl-1.5 ml-0.5">
+                  {new Date(latestReading.recorded_at).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                  <span className="text-emerald-600 font-semibold ml-1.5">
+                    ({formatAgo(secondsSincePacket)})
+                  </span>
                 </span>
               )}
             </div>
           ) : (
-            <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 border border-amber-200">
+            <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-1 border border-amber-200">
               <span className="h-2 w-2 rounded-full bg-amber-500"></span>
-              <span className="text-[11px] font-medium text-amber-700">
+              <span className="text-[11px] font-semibold text-amber-700">
                 Device Offline
               </span>
-              {latestReading && (
+              {latestReading ? (
                 <span className="text-[11px] font-mono text-slate-500 border-l border-amber-200 pl-1.5 ml-0.5">
-                  Last seen {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  Last seen {new Date(latestReading.recorded_at).toLocaleTimeString([], {
+                    hour: '2-digit',
+                    minute: '2-digit',
+                    second: '2-digit',
+                  })}
+                  <span className="text-amber-700 font-semibold ml-1.5">
+                    ({formatAgo(secondsSincePacket)})
+                  </span>
+                </span>
+              ) : (
+                <span className="text-[11px] font-mono text-slate-400 border-l border-amber-200 pl-1.5 ml-0.5">
+                  No packets received
                 </span>
               )}
             </div>

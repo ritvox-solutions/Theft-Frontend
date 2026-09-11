@@ -137,7 +137,7 @@ export function useMqtt({
             delta_current: Math.round(deltaCurrent * 1000) / 1000,
             theft_detected: theftDetected,
             power,
-            recorded_at: data.timestamp || new Date().toISOString(),
+            recorded_at: new Date().toISOString(),
             created_at: new Date().toISOString(),
             frequency: null,
             power_factor: null,

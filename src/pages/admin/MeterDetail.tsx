@@ -5,12 +5,13 @@ import UsageChart from '../../components/UsageChart'
 import { useToast } from '../../context/ToastContext'
 import type { Anomaly } from '../../services/anomalies'
 import { getAnomalies } from '../../services/anomalies'
+import { useMqtt } from '../../hooks/useMqtt'
 import { useWebSocket } from '../../hooks/useWebSocket'
 import { getMeter, setRelayState } from '../../services/meters-admin'
 import type { Meter, Reading } from '../../services/readings'
 import { getReadings } from '../../services/readings'
 
-const POLL_INTERVAL_MS = 4000
+const POLL_INTERVAL_MS = 8000
 
 export default function MeterDetail() {
   const { meterId } = useParams<{ meterId: string }>()
@@ -20,8 +21,34 @@ export default function MeterDetail() {
   const [alerts, setAlerts] = useState<Anomaly[]>([])
   const [isLoading, setIsLoading] = useState(true)
   const [relayBusy, setRelayBusy] = useState(false)
+  const [now, setNow] = useState(() => Date.now())
 
-  // Real-time WebSocket streaming for instant (<50ms) sensor updates
+  useEffect(() => {
+    const timer = setInterval(() => setNow(Date.now()), 2000)
+    return () => clearInterval(timer)
+  }, [])
+
+  // 1. Direct MQTT telemetry listener from broker
+  const { isConnected: isMqttConnected, publishRelayCommand } = useMqtt({
+    meterCode: meter?.meter_code,
+    enabled: Boolean(meter?.meter_code),
+    onReading: (incomingReading, incomingMeterCode) => {
+      if (incomingMeterCode && meter?.meter_code && incomingMeterCode !== meter.meter_code) return
+      setReadings((prev) => {
+        if (prev.some((r) => r.recorded_at === incomingReading.recorded_at)) {
+          return prev
+        }
+        return [incomingReading, ...prev.slice(0, 49)]
+      })
+    },
+    onRelayUpdate: (incomingMeterCode, relayState) => {
+      if (meter?.meter_code === incomingMeterCode) {
+        setMeter((prev) => (prev ? { ...prev, relay_state: relayState as any } : null))
+      }
+    },
+  })
+
+  // 2. Real-time WebSocket streaming fallback
   const { isConnected: isWsConnected } = useWebSocket({
     onReading: (incomingReading, relayState, incomingMeterId) => {
       if (incomingMeterId && incomingMeterId !== meterId) return
@@ -50,6 +77,7 @@ export default function MeterDetail() {
     }
     setRelayBusy(true)
     try {
+      publishRelayCommand(meter.meter_code, next)
       const updated = await setRelayState(meter.id, next)
       setMeter(updated)
       showToast(`${meter.meter_code} load ${next}`, 'success')
@@ -73,7 +101,14 @@ export default function MeterDetail() {
         ])
         if (cancelled) return
         setMeter(m)
-        setReadings(meterReadings)
+        setReadings((prev) => {
+          if (prev.length > 0 && prev[0].id.startsWith('mqtt-')) {
+            const liveTimestamps = new Set(prev.map((r) => r.recorded_at))
+            const older = meterReadings.filter((r) => !liveTimestamps.has(r.recorded_at))
+            return [...prev, ...older].slice(0, 50)
+          }
+          return meterReadings
+        })
         setAlerts(allAlerts.filter((a) => a.meter_id === meterId))
         setIsLoading(false)
       } catch {
@@ -83,9 +118,9 @@ export default function MeterDetail() {
 
     async function poll() {
       try {
-        const [m, meterReadings] = await Promise.all([
+        const [m, allAlerts] = await Promise.all([
           getMeter(meterId!),
-          getReadings(meterId!, { limit: 50 }),
+          getAnomalies(),
         ])
         if (cancelled) return
         setMeter((prev) => {
@@ -93,7 +128,7 @@ export default function MeterDetail() {
           if (prev.relay_state === m.relay_state && prev.status === m.status) return prev
           return m
         })
-        setReadings(meterReadings)
+        setAlerts(allAlerts.filter((a) => a.meter_id === meterId))
       } catch {
         // best effort polling
       }
@@ -121,14 +156,32 @@ export default function MeterDetail() {
 
   const latestReading = readings[0]
   const currentVoltage = latestReading?.voltage
-  const isVoltageZero = currentVoltage === undefined || currentVoltage <= 0
+  const readingAgeMs = latestReading ? now - new Date(latestReading.recorded_at).getTime() : Infinity
+  const isDeviceActive = readingAgeMs < 20000
+
+  const isVoltageZero = !isDeviceActive || currentVoltage === undefined || currentVoltage <= 0
   const currentCurrent = isVoltageZero ? 0 : (latestReading?.current ?? 0)
   const currentSourceCurrent = isVoltageZero ? 0 : (latestReading?.source_current ?? currentCurrent)
   const currentDeltaCurrent = isVoltageZero ? 0 : (latestReading?.delta_current ?? Math.max(0, currentSourceCurrent - currentCurrent))
-  const isTheftDetected = !isVoltageZero && Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.030)
+  const isTheftDetected = isDeviceActive && !isVoltageZero && Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.030)
 
   return (
     <div className="space-y-6">
+      {/* Offline Alert Banner */}
+      {!isDeviceActive && (
+        <div className="rounded-lg border border-amber-200 bg-amber-50/90 px-4 py-2.5 text-xs text-amber-900 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <svg className="h-4 w-4 text-amber-600 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z" />
+            </svg>
+            <span>Meter is currently offline or disconnected from HiveMQ. Waiting for telemetry...</span>
+          </div>
+          <span className="font-mono text-amber-700">
+            {latestReading ? `Last packet: ${new Date(latestReading.recorded_at).toLocaleTimeString()}` : 'No packets'}
+          </span>
+        </div>
+      )}
+
       {/* Real-time Theft Alert Banner */}
       {isTheftDetected && (
         <div className="rounded-xl border-2 border-rose-500 bg-rose-50/95 p-4.5 shadow-md animate-pulse">
@@ -173,20 +226,34 @@ export default function MeterDetail() {
               variant={meter.status === 'active' ? 'normal' : 'flagged'}
               label={meter.status === 'active' ? 'Active' : 'Inactive'}
             />
-            <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2 py-0.5 border border-emerald-200">
-              <span className="relative flex h-2 w-2">
-                <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
-                <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
-              </span>
-              <span className="text-[11px] font-medium text-emerald-700">
-                {isWsConnected ? 'Live • Realtime' : 'Live • Polling'}
-              </span>
-              {latestReading && (
-                <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
-                  {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+            {isDeviceActive ? (
+              <div className="flex items-center gap-1.5 rounded-full bg-emerald-50 px-2.5 py-0.5 border border-emerald-200">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
                 </span>
-              )}
-            </div>
+                <span className="text-[11px] font-medium text-emerald-700">
+                  {isMqttConnected ? 'Live • MQTT Direct' : isWsConnected ? 'Live • WebSocket' : 'Live'}
+                </span>
+                {latestReading && (
+                  <span className="text-[11px] font-mono text-slate-500 border-l border-emerald-200 pl-1.5 ml-0.5">
+                    {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                )}
+              </div>
+            ) : (
+              <div className="flex items-center gap-1.5 rounded-full bg-amber-50 px-2.5 py-0.5 border border-amber-200">
+                <span className="h-2 w-2 rounded-full bg-amber-500"></span>
+                <span className="text-[11px] font-medium text-amber-700">
+                  Device Offline
+                </span>
+                {latestReading && (
+                  <span className="text-[11px] font-mono text-slate-500 border-l border-amber-200 pl-1.5 ml-0.5">
+                    Last seen {new Date(latestReading.recorded_at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' })}
+                  </span>
+                )}
+              </div>
+            )}
           </div>
         </div>
         {meter.location_label && <p className="text-sm text-slate-500 mt-1">{meter.location_label}</p>}

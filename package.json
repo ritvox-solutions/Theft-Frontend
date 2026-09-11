@@ -10,7 +10,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@types/paho-mqtt": "^1.0.10",
     "axios": "^1.19.0",
+    "paho-mqtt": "^1.1.0",
     "react": "^19.2.8",
     "react-dom": "^19.2.8",
     "react-router-dom": "^7.18.2",

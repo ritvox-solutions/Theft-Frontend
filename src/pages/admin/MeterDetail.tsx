@@ -191,7 +191,8 @@ export default function MeterDetail() {
   const currentCurrent = isVoltageZero ? 0 : (latestReading?.current ?? 0)
   const currentSourceCurrent = isVoltageZero ? 0 : (latestReading?.source_current ?? currentCurrent)
   const currentDeltaCurrent = isVoltageZero ? 0 : (latestReading?.delta_current ?? Math.max(0, currentSourceCurrent - currentCurrent))
-  const isTheftDetected = isDeviceActive && !isVoltageZero && Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.030)
+  // Suppress sensor noise false alarms: require hardware debounced confirmation or unambiguous delta >= 70mA (~16W)
+  const isTheftDetected = isDeviceActive && !isVoltageZero && Boolean(latestReading?.theft_detected || currentDeltaCurrent >= 0.070)
 
   return (
     <div className="space-y-6">

@@ -121,8 +121,11 @@ export function useMqtt({
             if (current < 0.02) current = 0.0
             if (sourceCurrent < 0.02) sourceCurrent = 0.0
             deltaCurrent = Math.max(0, sourceCurrent - current)
-            if (deltaCurrent >= 0.03) {
-              theftDetected = true
+            // Prioritize ESP32 firmware debounced determination to eliminate ADC sensor noise false alarms
+            if (data.theft_detected !== undefined) {
+              theftDetected = Boolean(data.theft_detected)
+            } else {
+              theftDetected = deltaCurrent >= 0.070
             }
           }
 
